@@ -1,8 +1,8 @@
 {
-   "name": "apexiedev/opentouch",
-   "description": "A support-rich server software for Minecraft Bedrock Edition based on PocketMine-MP.",
+   "name": "RandomPE/AxolotlNetwork",
+   "description": "A server software for Minecraft: Bedrock Edition written in PHP",
    "type": "project",
-   "homepage": "https://github.com/ApexieDevelopment/OpenTouch",
+   "homepage": "https://pmmp.io",
    "license": "LGPL-3.0",
    "require": {
       "php": "^7.4 || ^8.0",
@@ -31,15 +31,14 @@
       "pocketmine/classloader": "^0.1.0",
       "pocketmine/log": "^0.2.0",
       "pocketmine/log-pthreads": "^0.1.0",
-      "pocketmine/math": "0.2.6",
+      "pocketmine/math": "^0.2.0",
       "pocketmine/nbt": "^0.2.18",
       "pocketmine/raklib": "^0.12.7",
       "pocketmine/snooze": "^0.1.0",
       "pocketmine/spl": "^0.4.0"
    },
    "require-dev": {
-      "friendsofphp/php-cs-fixer": "^3.0",
-      "phpstan/phpstan": "0.12.94",
+      "phpstan/phpstan": "0.12.98",
       "phpstan/phpstan-phpunit": "^0.12.6",
       "phpstan/phpstan-strict-rules": "^0.12.2",
       "phpunit/phpunit": "^9.2"
@@ -68,7 +67,7 @@
    "scripts": {
       "make-devtools": "@php -dphar.readonly=0 tests/plugins/DevTools/src/DevTools/ConsoleScript.php --make tests/plugins/DevTools --out plugins/DevTools.phar",
       "make-server": [
-         "@composer install --no-dev --classmap-authoritative",
+         "@composer install --no-dev --classmap-authoritative --ignore-platform-reqs",
          "@php -dphar.readonly=0 build/server-phar.php"
       ]
    }
