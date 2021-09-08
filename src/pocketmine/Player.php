@@ -36,12 +36,12 @@ use pocketmine\entity\Human;
 use pocketmine\entity\InvalidSkinException;
 use pocketmine\entity\object\ItemEntity;
 use pocketmine\entity\projectile\Arrow;
-use pocketmine\entity\projectile\FishingHook;
 use pocketmine\entity\Skin;
 use pocketmine\event\entity\EntityDamageByEntityEvent;
 use pocketmine\event\entity\EntityDamageEvent;
 use pocketmine\event\inventory\InventoryCloseEvent;
 use pocketmine\event\player\cheat\PlayerIllegalMoveEvent;
+use pocketmine\event\player\PlayerAchievementAwardedEvent;
 use pocketmine\event\player\PlayerAnimationEvent;
 use pocketmine\event\player\PlayerBedEnterEvent;
 use pocketmine\event\player\PlayerBedLeaveEvent;
@@ -96,12 +96,12 @@ use pocketmine\math\AxisAlignedBB;
 use pocketmine\math\Vector3;
 use pocketmine\metadata\MetadataValue;
 use pocketmine\nbt\NetworkLittleEndianNBTStream;
+use pocketmine\nbt\tag\ByteTag;
 use pocketmine\nbt\tag\CompoundTag;
 use pocketmine\nbt\tag\DoubleTag;
 use pocketmine\nbt\tag\ListTag;
 use pocketmine\nbt\tag\StringTag;
 use pocketmine\network\mcpe\convert\ItemTypeDictionary;
-use pocketmine\network\mcpe\convert\RuntimeBlockMapping;
 use pocketmine\network\mcpe\PlayerNetworkSessionAdapter;
 use pocketmine\network\mcpe\protocol\ActorEventPacket;
 use pocketmine\network\mcpe\protocol\AdventureSettingsPacket;
@@ -109,7 +109,6 @@ use pocketmine\network\mcpe\protocol\AnimatePacket;
 use pocketmine\network\mcpe\protocol\AvailableActorIdentifiersPacket;
 use pocketmine\network\mcpe\protocol\AvailableCommandsPacket;
 use pocketmine\network\mcpe\protocol\BatchPacket;
-use pocketmine\network\mcpe\protocol\BedrockProtocolInfo;
 use pocketmine\network\mcpe\protocol\BiomeDefinitionListPacket;
 use pocketmine\network\mcpe\protocol\BlockActorDataPacket;
 use pocketmine\network\mcpe\protocol\BlockPickRequestPacket;
@@ -148,6 +147,7 @@ use pocketmine\network\mcpe\protocol\TextPacket;
 use pocketmine\network\mcpe\protocol\TransferPacket;
 use pocketmine\network\mcpe\protocol\types\CommandData;
 use pocketmine\network\mcpe\protocol\types\CommandEnum;
+use pocketmine\network\mcpe\protocol\types\CommandParameter;
 use pocketmine\network\mcpe\protocol\types\ContainerIds;
 use pocketmine\network\mcpe\protocol\types\DimensionIds;
 use pocketmine\network\mcpe\protocol\types\Experiments;
@@ -308,8 +308,6 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 	protected $username = "";
 	/** @var string */
 	protected $iusername = "";
-	/** @var int */
-	protected $protocol = ProtocolInfo::CURRENT_PROTOCOL;
 	/** @var string */
 	protected $displayName = "";
 	/** @var int */
@@ -346,6 +344,8 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 	/** @var bool */
 	protected $removeFormat = true;
 
+	/** @var bool[] name of achievement => bool */
+	protected $achievements = [];
 	/** @var bool */
 	protected $playedBefore;
 	/** @var int */
@@ -417,8 +417,6 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 	/** @var Form[] */
 	protected $forms = [];
 
-	/** @var FishingHook|null */
-	protected $fishingHook;
 	/** @var float */
 	protected $lastRightClickTime = 0.0;
 	/** @var UseItemTransactionData|null */
@@ -485,19 +483,14 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 	}
 
 	/**
-	 * Returns the player's UUID. This should be preferred over their Xbox user ID (XUID) because UUID is a standard
-	 * format which will never change, and all players will have one regardless of whether they are logged into Xbox
-	 * Live.
+	 * Returns the player's UUID. This should be the preferred method to identify a player.
+	 * It does not change if the player changes their username.
 	 *
-	 * The UUID is comprised of:
-	 * - when logged into XBL: a hash of their XUID (and as such will not change for the lifetime of the XBL account)
-	 * - when NOT logged into XBL: a hash of their name + clientID + secret device ID.
+	 * All players will have a UUID, regardless of whether they are logged into Xbox Live or not. However, note that
+	 * non-XBL players can fake their UUIDs.
 	 *
-	 * WARNING: UUIDs of players **not logged into Xbox Live** CAN BE FAKED and SHOULD NOT be trusted!
-	 *
-	 * (In the olden days this method used to return a fake UUID computed by the server, which was used by plugins such
-	 * as SimpleAuth for authentication. This is NOT SAFE anymore as this UUID is now what was given by the client, NOT
-	 * a server-computed UUID.)
+	 * WARNING: DO NOT trust this before PlayerLoginEvent. Before PlayerLoginEvent, the player hasn't yet been
+	 * authenticated, and any of their data might be faked.
 	 */
 	public function getUniqueId() : ?UUID{
 		return parent::getUniqueId();
@@ -767,7 +760,12 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 			$data->commandDescription = $this->server->getLanguage()->translateString($command->getDescription());
 			$data->flags = 0;
 			$data->permission = 0;
-			$data->overloads = $command->getOverloads();
+
+			$parameter = new CommandParameter();
+			$parameter->paramName = "args";
+			$parameter->paramType = AvailableCommandsPacket::ARG_FLAG_VALID | AvailableCommandsPacket::ARG_TYPE_RAWTEXT;
+			$parameter->isOptional = true;
+			$data->overloads[0][0] = $parameter;
 
 			$aliases = $command->getAliases();
 			if(count($aliases) > 0){
@@ -775,7 +773,9 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 					//work around a client bug which makes the original name not show when aliases are used
 					$aliases[] = $data->commandName;
 				}
-				$data->aliases = new CommandEnum(ucfirst($command->getName()) . "Aliases", array_values($aliases));
+				$data->aliases = new CommandEnum();
+				$data->aliases->enumName = ucfirst($command->getName()) . "Aliases";
+				$data->aliases->enumValues = array_values($aliases);
 			}
 
 			$pk->commandData[$command->getName()] = $data;
@@ -815,10 +815,6 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 	 */
 	public function getName() : string{
 		return $this->username;
-	}
-
-	public function getProtocol() : int{
-		return $this->protocol;
 	}
 
 	public function getLowerCaseName() : string{
@@ -1077,7 +1073,7 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 	 * @return void
 	 */
 	public function doFirstSpawn(){
-		if($this->spawned){
+		if($this->spawned || !$this->constructed){
 			return; //avoid player spawning twice (this can only happen on 3.x with a custom malicious client)
 		}
 		$this->spawned = true;
@@ -1115,6 +1111,10 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 		}
 
 		$this->spawnToAll();
+
+		if($this->server->getUpdater()->hasUpdate() and $this->hasPermission(Server::BROADCAST_CHANNEL_ADMINISTRATIVE) and $this->server->getProperty("auto-updater.on-update.warn-ops", true)){
+			$this->server->getUpdater()->showPlayerUpdate($this);
+		}
 
 		if($this->getHealth() <= 0){
 			$this->respawn();
@@ -1324,6 +1324,45 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 			$pk->entityRuntimeId = $this->id;
 			$pk->action = AnimatePacket::ACTION_STOP_SLEEP;
 			$this->dataPacket($pk);
+		}
+	}
+
+	public function hasAchievement(string $achievementId) : bool{
+		if(!isset(Achievement::$list[$achievementId])){
+			return false;
+		}
+
+		return $this->achievements[$achievementId] ?? false;
+	}
+
+	public function awardAchievement(string $achievementId) : bool{
+		if(isset(Achievement::$list[$achievementId]) and !$this->hasAchievement($achievementId)){
+			foreach(Achievement::$list[$achievementId]["requires"] as $requirementId){
+				if(!$this->hasAchievement($requirementId)){
+					return false;
+				}
+			}
+			$ev = new PlayerAchievementAwardedEvent($this, $achievementId);
+			$ev->call();
+			if(!$ev->isCancelled()){
+				$this->achievements[$achievementId] = true;
+				Achievement::broadcast($this, $achievementId);
+
+				return true;
+			}else{
+				return false;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * @return void
+	 */
+	public function removeAchievement(string $achievementId){
+		if($this->hasAchievement($achievementId)){
+			$this->achievements[$achievementId] = false;
 		}
 	}
 
@@ -1855,9 +1894,8 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 			return false;
 		}
 		$this->seenLoginPacket = true;
-		$this->protocol = BedrockProtocolInfo::translateProtocol($packet->protocol);
 
-		if(!in_array($packet->protocol, ProtocolInfo::ACCEPT_PROTOCOL, true)){
+		if($packet->protocol !== ProtocolInfo::CURRENT_PROTOCOL){
 			if($packet->protocol < ProtocolInfo::CURRENT_PROTOCOL){
 				$this->sendPlayStatus(PlayStatusPacket::LOGIN_FAILED_CLIENT, true);
 			}else{
@@ -1901,8 +1939,8 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 					$animation["ImageWidth"],
 					base64_decode($animation["Image"], true)),
 				$animation["Type"],
-				$animation["Frames"] ?? 0,
-				$animation["AnimationExpression"] ?? 0
+				$animation["Frames"],
+				$animation["AnimationExpression"]
 			);
 		}
 
@@ -1924,7 +1962,7 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 
 		$skinData = new SkinData(
 			$packet->clientData["SkinId"],
-			$packet->clientData["PlayFabId"] ?? '',
+			$packet->clientData["PlayFabId"],
 			base64_decode($packet->clientData["SkinResourcePatch"] ?? "", true),
 			new SkinImage(
 				$packet->clientData["SkinImageHeight"],
@@ -1975,7 +2013,10 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 			return true;
 		}
 
-		if($this->isBanned() and $this->kick("You are banned", false)){
+		if(
+			($this->isBanned() or $this->server->getIPBans()->isBanned($this->getAddress())) and
+			$this->kick("You are banned", false)
+		){
 			return true;
 		}
 
@@ -2041,6 +2082,7 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 		$checkXUID = (bool) $this->server->getProperty("player.verify-xuid", true);
 		$kickForXUIDMismatch = function(string $xuid) use ($checkXUID) : bool{
 			if($checkXUID && $this->xuid !== $xuid){
+				$this->server->getLogger()->debug($this->getName() . " XUID mismatch: expected '$xuid', but got '$this->xuid'");
 				if($this->kick("XUID does not match (possible impersonation attempt)", false)){
 					//TODO: Longer term, we should be identifying playerdata using something more reliable, like XUID or UUID.
 					//However, that would be a very disruptive change, so this will serve as a stopgap for now.
@@ -2058,14 +2100,14 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 				if($kickForXUIDMismatch($p->getXuid())){
 					return;
 				}
-				if(!$p->kick("disconnectionScreen.loggedinOtherLocation")){
+				if(!$p->kick("logged in from another location")){
 					$this->close($this->getLeaveMessage(), "Logged in from another location");
 					return;
 				}
 			}
 		}
 
-		$this->namedtag = $this->server->getOfflinePlayerDataManager()->getOfflinePlayerData($this->username);
+		$this->namedtag = $this->server->getOfflinePlayerData($this->username);
 		if($checkXUID){
 			$recordedXUID = $this->namedtag->getTag("LastKnownXUID");
 			if(!($recordedXUID instanceof StringTag)){
@@ -2098,6 +2140,14 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 			]));
 		}else{
 			$this->setLevel($level);
+		}
+
+		$this->achievements = [];
+
+		$achievements = $this->namedtag->getCompoundTag("Achievements") ?? [];
+		/** @var ByteTag $achievement */
+		foreach($achievements as $achievement){
+			$this->achievements[$achievement->getName()] = $achievement->getValue() !== 0;
 		}
 
 		$this->sendPlayStatus(PlayStatusPacket::LOGIN_SUCCESS);
@@ -2224,9 +2274,9 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 		$pk->levelId = "";
 		$pk->worldName = $this->server->getMotd();
 		$pk->experiments = new Experiments([], false);
-		$pk->itemTable = ItemTypeDictionary::getInstance()->getDictionary($this->protocol)->getEntries();
+		$pk->itemTable = ItemTypeDictionary::getInstance()->getEntries();
 		$pk->playerMovementSettings = new PlayerMovementSettings(PlayerMovementType::LEGACY, 0, false);
-		$pk->serverSoftwareVersion = sprintf("%s %s", \pocketmine\NAME, \pocketmine\SOFTWARE_VERSION);
+		$pk->serverSoftwareVersion = sprintf("%s %s", \pocketmine\NAME, \pocketmine\VERSION);
 		$this->dataPacket($pk);
 
 		$this->sendDataPacket(new AvailableActorIdentifiersPacket());
@@ -2242,7 +2292,7 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 
 		$this->server->getLogger()->info($this->getServer()->getLanguage()->translateString("pocketmine.player.logIn", [
 			TextFormat::AQUA . $this->username . TextFormat::WHITE,
-			"[$this->ip]",
+			$this->ip,
 			$this->port,
 			$this->id,
 			$this->level->getName(),
@@ -2263,10 +2313,7 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 		$this->sendAllInventories();
 		$this->inventory->sendCreativeContents();
 		$this->inventory->sendHeldItem($this);
-		$pk = $this->server->getCraftingManager()->getCraftingDataPacket($this->protocol);
-		if($pk !== null){
-			$this->dataPacket($pk);
-		}
+		$this->dataPacket($this->server->getCraftingManager()->getCraftingDataPacket());
 
 		$this->server->addOnlinePlayer($this);
 		$this->server->sendFullPlayerListData($this);
@@ -2462,6 +2509,8 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 				return false;
 			}
 
+			//TODO: fix achievement for getting iron from furnace
+
 			return true;
 		}elseif($packet->trData instanceof MismatchTransactionData){
 			if(count($packet->trData->getActions()) > 0){
@@ -2482,6 +2531,21 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 
 			switch($packet->trData->getActionType()){
 				case UseItemTransactionData::ACTION_CLICK_BLOCK:
+					//TODO: start hack for client spam bug
+					$spamBug = ($this->lastRightClickData !== null and
+						microtime(true) - $this->lastRightClickTime < 0.1 and //100ms
+						$this->lastRightClickData->getPlayerPos()->distanceSquared($packet->trData->getPlayerPos()) < 0.00001 and
+						$this->lastRightClickData->getBlockPos()->equals($packet->trData->getBlockPos()) and
+						$this->lastRightClickData->getClickPos()->distanceSquared($packet->trData->getClickPos()) < 0.00001 //signature spam bug has 0 distance, but allow some error
+					);
+					//get rid of continued spam if the player clicks and holds right-click
+					$this->lastRightClickData = $packet->trData;
+					$this->lastRightClickTime = microtime(true);
+					if($spamBug){
+						return true;
+					}
+					//TODO: end hack for client spam bug
+
 					$this->setUsingItem(false);
 
 					if(!$this->canInteract($blockVector->add(0.5, 0.5, 0.5), 13)){
@@ -2878,7 +2942,7 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 
 				$tile = $this->level->getTile($pos);
 				if($tile instanceof ItemFrame and $tile->hasItem()){
-					if(lcg_value() <= $tile->getItemDropChance()){
+					if (lcg_value() <= $tile->getItemDropChance()){
 						$this->level->dropItem($tile->getBlock(), $tile->getItem());
 					}
 					$tile->setItem(null);
@@ -2939,11 +3003,7 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 				break; //TODO
 			case PlayerActionPacket::ACTION_CRACK_BREAK:
 				$block = $this->level->getBlock($pos);
-				$this->level->broadcastLevelEvent($pos, LevelEventPacket::EVENT_PARTICLE_PUNCH_BLOCK, -1,
-					function(int $protocol) use ($block) : int{
-						return RuntimeBlockMapping::getMapping($protocol)->toStaticRuntimeId($block->getId(), $block->getDamage());
-					}
-				);
+				$this->level->broadcastLevelEvent($pos, LevelEventPacket::EVENT_PARTICLE_PUNCH_BLOCK, $block->getRuntimeId() | ($packet->face << 24));
 				//TODO: destroy-progress level event
 				break;
 			case PlayerActionPacket::ACTION_START_SWIMMING:
@@ -3294,7 +3354,7 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 
 		//Basic safety restriction. TODO: improve this
 		if(!$this->loggedIn and !$packet->canBeSentBeforeLogin()){
-			return false;
+			throw new \InvalidArgumentException("Attempted to send " . get_class($packet) . " to " . $this->getName() . " too early");
 		}
 
 		$timings = Timings::getSendDataPacketTimings($packet);
@@ -3645,6 +3705,8 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 			$this->stopSleep();
 
 			if($this->spawned){
+				$this->doCloseInventory();
+
 				$ev = new PlayerQuitEvent($this, $message, $reason);
 				$ev->call();
 				if($ev->getQuitMessage() != ""){
@@ -3762,11 +3824,17 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 			}
 		}
 
+		$achievements = new CompoundTag("Achievements");
+		foreach($this->achievements as $achievement => $status){
+			$achievements->setByte($achievement, $status ? 1 : 0);
+		}
+		$this->namedtag->setTag($achievements);
+
 		$this->namedtag->setInt("playerGameType", $this->gamemode);
 		$this->namedtag->setLong("lastPlayed", (int) floor(microtime(true) * 1000));
 
 		if($this->username != ""){
-			$this->server->getOfflinePlayerDataManager()->saveOfflinePlayerData($this->username, $this->namedtag);
+			$this->server->saveOfflinePlayerData($this->username, $this->namedtag);
 		}
 	}
 
@@ -3816,6 +3884,11 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 	}
 
 	protected function respawn() : void{
+		if($this->server->isHardcore()){
+			$this->setBanned(true);
+			return;
+		}
+
 		$ev = new PlayerRespawnEvent($this, $this->getSpawn());
 		$ev->call();
 
@@ -4058,7 +4131,7 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 	/**
 	 * Removes an inventory window from the player.
 	 *
-	 * @param bool $force Forces removal of permanent windows such as normal inventory, cursor
+	 * @param bool      $force Forces removal of permanent windows such as normal inventory, cursor
 	 *
 	 * @return void
 	 * @throws \InvalidArgumentException if trying to remove a fixed inventory window without the `force` parameter as true
@@ -4149,13 +4222,5 @@ class Player extends Human implements CommandSender, ChunkLoader, IPlayer{
 
 	public function isLoaderActive() : bool{
 		return $this->isConnected();
-	}
-
-	public function getFishingHook() : ?FishingHook{
-		return $this->fishingHook;
-	}
-
-	public function setFishingHook(?FishingHook $fishingHook) : void{
-		$this->fishingHook = $fishingHook;
 	}
 }
