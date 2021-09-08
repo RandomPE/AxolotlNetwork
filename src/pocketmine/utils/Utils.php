@@ -403,7 +403,6 @@ class Utils{
 		$Y = $pos1["y"] - $pos2["y"];
 		$hAngle = rad2deg(atan2($Z, $X) - M_PI_2);
 		$vAngle = rad2deg(-atan2($Y, $dXZ));
-
 		return array("yaw" => $hAngle, "pitch" => $vAngle);
 	}*/
 
@@ -454,7 +453,7 @@ class Utils{
 	 * @param callable|null $onSuccess    function to be called if there is no error. Accepts a resource argument as the cURL handle.
 	 * @phpstan-param array<int, mixed>                $extraOpts
 	 * @phpstan-param list<string>                     $extraHeaders
-	 * @phpstan-param (callable(resource) : void)|null $onSuccess
+	 * @phpstan-param (callable(PhpCurlHandle) : void)|null $onSuccess
 	 *
 	 * @return array a plain array of three [result body : string, headers : string[][], HTTP response code : int]. Headers are grouped by requests with strtolower(header name) as keys and header value as values
 	 * @phpstan-return array{string, list<array<string, string>>, int}
@@ -563,7 +562,7 @@ class Utils{
 					$args = $trace[$i]["params"];
 				}
 
-				$params = implode(", ", array_map(static function($value) use($maxStringLength) : string{
+				$params = implode(", ", array_map(function($value) use($maxStringLength) : string{
 					if(is_object($value)){
 						return "object " . self::getNiceClassName($value);
 					}
