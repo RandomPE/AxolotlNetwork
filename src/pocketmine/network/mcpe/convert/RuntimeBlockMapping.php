@@ -124,7 +124,7 @@ final class RuntimeBlockMapping{
 			foreach($idToStatesMap[$mappedName] as $k){
 				$networkState = self::$bedrockKnownStates[$k];
 				if($mappedState->equals($networkState)){
-					$mapping->registerMapping($k, $id, $data);
+					self::registerMapping($k, $id, $data);
 					continue 2;
 				}
 			}
